@@ -6,7 +6,7 @@
 
 # Are you competent to run this command?
 check_user_input() {
-    echo "Correct the syntax: while true; do date; wait 10; done"
+    echo "Correct the syntax: while true; do date; sleep for 10; done"
     read -r user_input
 
     if [[ "$user_input" == "while true; do date; sleep 10; done" ]]; then
