@@ -4,7 +4,7 @@
 # CAUTION - DESTRUCTIVE - DO NOT RUN
 # ... unless you can answer the question.
 
-# Are you competent to run this command?
+# Do you know what you are doing?
 check_user_input() {
     echo "Correct the syntax: while true; do date; sleep for 10; done"
     read -r user_input
