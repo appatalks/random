@@ -63,5 +63,8 @@ sudo mysql -e "DROP DATABASE test;"
 sudo mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
 sudo mysql -e "FLUSH PRIVILEGES;"
 
+# Remove GHES Flag
+sudo rm -fr /etc/github/enterprise-release
+
 # Additional 
 # Placeholder
