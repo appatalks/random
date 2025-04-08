@@ -49,7 +49,7 @@ echo "Monitoring kernel logs (dmesg)..."
 dmesg -w &
 
 # Wait for the fio command to complete before stopping the log monitoring
-wait
+sleep 180
 
 # Unmount and clean up
 echo "Cleaning up..."
