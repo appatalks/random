@@ -362,6 +362,30 @@ exhaustive_restarts() {
   # Execute safe restarts first.
   safe_restarts
 
+  # Stop replication
+  ghe-repl-stop-all &
+  pid=$!
+  counter=0
+  
+  # output standby messages.
+  while kill -0 "$pid" 2>/dev/null; do
+    echo "Stopping replication... please stand by."
+    sleep 20
+    counter=$(( counter + 1 ))
+  done
+
+  # Start replication
+  ghe-repl-start-all &
+  pid=$!
+  counter=0
+  
+  # output standby messages.
+  while kill -0 "$pid" 2>/dev/null; do
+    echo "Starting replication... please stand by."
+    sleep 20
+    counter=$(( counter + 1 ))
+  done
+
   # Check if Actions is enabled
   ACTIONS_ENABLED=$(ghe-config app.actions.enabled)
   if [ "$ACTIONS_ENABLED" != "true" ]; then
