@@ -83,11 +83,9 @@ try_apply_config() {
 }
 
 # Function to backup Actions configuration variables.
-# For when using AWS (S3 - is the better of commercially avail and easy to use platforms imho), so here we are...
 backup_actions_config() {
   echo "Backing up Actions configuration variables to ${ACTIONS_BACKUP}..."
   
-  # Backup the configuration values to the specified backup file.
   ghe-config secrets.actions.storage.blob-provider > "${ACTIONS_BACKUP}"
   ghe-config secrets.actions.storage.s3.bucket-name >> "${ACTIONS_BACKUP}"
   ghe-config secrets.actions.storage.s3.access-key-id >> "${ACTIONS_BACKUP}"
@@ -96,13 +94,6 @@ backup_actions_config() {
   
   echo "Backup saved to ${ACTIONS_BACKUP}."
   
-  # Read the backup file to extract the necessary values.
-  # The backup file is expected to contain the following values in order:
-  # 1. blob-provider (not needed for restore)
-  # 2. bucket-name
-  # 3. access-key-id
-  # 4. access-secret
-  # 5. service-url
   bucket_name=$(sed -n '2p' "${ACTIONS_BACKUP}")
   access_key_id=$(sed -n '3p' "${ACTIONS_BACKUP}")
   access_secret=$(sed -n '4p' "${ACTIONS_BACKUP}")
@@ -188,7 +179,6 @@ update_support_ticket() {
 # Menu and Input Validation
 ###############################
 
-# Function to print the menu and get the user's choice.
 print_menu() {
   echo "#######################################################"
   echo "# GitHub Enterprise Server Debug Menu"
@@ -213,7 +203,6 @@ print_menu() {
   fi
 }
 
-# Function to validate the user's choice.
 validate_choice() {
   case $choice in
     1)
@@ -249,31 +238,27 @@ safe_restarts() {
   wait_for_lockrun
   set_maintenance
   
-  # Try applying config. If successful, script exits inside try_apply_config.
-  try_apply_config
+  # Only call try_apply_config if the SKIP_TRY_APPLY_CONFIG flag is not set.
+  if [ "$SKIP_TRY_APPLY_CONFIG" != "true" ]; then
+    try_apply_config
+  fi
   
   # If we reach here, configuration did not fully succeed, so proceed with remedial actions.
-
-  # Stop replication
   ghe-repl-stop-all &
   pid=$!
   counter=0
   
-  # output standby messages.
   while kill -0 "$pid" 2>/dev/null; do
     echo "Stopping replication... please stand by."
     sleep 20
     counter=$(( counter + 1 ))
   done
   
-  # Stop alambic.
   sudo nomad stop alambic
   sudo nomad job stop alambic
   
-  # Elasticsearch rebalance.
   /usr/local/share/enterprise/ghe-repl-stop-es
 
-  # Nomad 
   sudo nomad stop haproxy-frontend 
   sudo nomad stop haproxy-cluster-proxy 
   sudo nomad stop haproxy-data-proxy
@@ -293,17 +278,15 @@ safe_restarts() {
   sudo nomad stop babeld
   sudo nomad stop github-unicorn
   sudo nomad stop github-gitauth
-  # others
+
   sudo service cron stop
   sudo systemctl stop consul
   sudo rm -rf /data/user/consul/raft
 
-  # Run other services
   sudo systemctl restart nomad
   sudo service cron start
   sudo systemctl start consul
   
-  # Run Nomad services
   sudo nomad run -hcl1 /etc/nomad-jobs/haproxy/haproxy-frontend.hcl
   sudo nomad run -hcl1 /etc/nomad-jobs/haproxy/haproxy-data-proxy.hcl
   sudo nomad run -hcl1 /etc/nomad-jobs/haproxy/haproxy-cluster-proxy.hcl
@@ -324,15 +307,12 @@ safe_restarts() {
   sudo nomad run /etc/nomad-jobs/github/unicorn.hcl
   sudo nomad run -hcl1 /etc/nomad-jobs/github/gitauth.hcl
 
-  # Restart alambic.
   sudo nomad run /etc/nomad-jobs/alambic/alambic.hcl
 
-  # Start replication
   ghe-repl-start-all &
   pid=$!
   counter=0
   
-  # output standby messages.
   while kill -0 "$pid" 2>/dev/null; do
     echo "Starting replication... please stand by."
     sleep 20
@@ -343,7 +323,6 @@ safe_restarts() {
   pid=$!
   counter=0
   
-  # While the ghe-config-apply process is running, output standby messages.
   while kill -0 "$pid" 2>/dev/null; do
     echo "Configuration in progress... please stand by."
     sleep 20
@@ -359,34 +338,30 @@ exhaustive_restarts() {
   echo "Running EXHAUSTIVE RESTARTS procedures..."
   echo "******************************************"
   
-  # Execute safe restarts first.
+  # Set flag to skip calling try_apply_config in safe_restarts.
+  SKIP_TRY_APPLY_CONFIG="true"
   safe_restarts
 
-  # Stop replication
   ghe-repl-stop-all &
   pid=$!
   counter=0
   
-  # output standby messages.
   while kill -0 "$pid" 2>/dev/null; do
     echo "Stopping replication... please stand by."
     sleep 20
     counter=$(( counter + 1 ))
   done
 
-  # Start replication
   ghe-repl-start-all &
   pid=$!
   counter=0
   
-  # output standby messages.
   while kill -0 "$pid" 2>/dev/null; do
     echo "Starting replication... please stand by."
     sleep 20
     counter=$(( counter + 1 ))
   done
 
-  # Check if Actions is enabled
   ACTIONS_ENABLED=$(ghe-config app.actions.enabled)
   if [ "$ACTIONS_ENABLED" != "true" ]; then
     echo "Actions are not enabled. Skipping additional repairs."
@@ -395,25 +370,21 @@ exhaustive_restarts() {
 
   FAILED=0
 
-  # Run additional repairs.
   echo "Running additional repairs..."
   ghe-actions-console -s mps -c Repair-DatabaseLogins || FAILED=1
   ghe-actions-console -s token -c Repair-DatabaseLogins || FAILED=1
   ghe-actions-console -s actions -c Repair-DatabaseLogins || FAILED=1
   ghe-actions-console -s artifactcache -c Repair-DatabaseLogin || FAILED=1
   
-  # Compress MSSQL.
   echo "Compressing MSSQL..."
   ghe-export-mssql --compress --stats 1 || FAILED=1
   sudo du --all --human-readable /data/user/mssql/data || FAILED=1
   sudo /usr/local/share/enterprise/ghe-mssql-shrinkfile --disable-mssql-replication --set-simple-recovery-model || FAILED=1
   sudo du --all --human-readable /data/user/mssql/data || FAILED=1
   
-  # Restart MSSQL.
   if [ -f "/etc/github/cluster" ]; then
     echo "Cluster configuration detected. Restarting MSSQL in cluster mode..."
     ghe-cluster-each --serial --replica --role mssql -- sudo /usr/local/share/enterprise/ghe-repl-start-mssql || FAILED=1
-    # Run ghe-actions-check and ignore specific error messages.
     ghe-actions-check || echo "Ignoring MSSQL not healthy error"
   else
     echo "No clustering detected. Restarting MSSQL in standalone mode..."
@@ -424,7 +395,6 @@ exhaustive_restarts() {
     ghe-actions-check || echo "Ignoring MSSQL not healthy error"
   fi
 
-  # If any step failed in the additional repair steps, disable Actions.
   if [ $FAILED -ne 0 ]; then
       echo "One or more additional repair steps failed. Disabling Actions..."
       backup_actions_config
@@ -433,7 +403,6 @@ exhaustive_restarts() {
       ghe-config-apply &
       pid=$!
       counter=0
-      # output standby messages.
       while kill -0 "$pid" 2>/dev/null; do
         echo "Configuration in progress... please stand by."
         sleep 20
@@ -450,14 +419,9 @@ destructive_repair() {
   echo "Running DESTRUCTIVE REPAIR procedures..."
   echo "******************************************"
   
-  # Execute previous repair levels. (maybe we can skip this.)
-  # exhaustive_restarts
-
-  # Backup Actions config and disable
   backup_actions_config
   ghe-config app.actions.enabled false
 
-  # Additional destructive repair actions.
   /usr/local/share/enterprise/ghe-nomad-local-alloc-stop elasticsearch
   sudo rm -rf /data/user/elasticsearch/_state
   sudo rm -f /etc/github/repl-{state,remote,running} /data/user/common/cluster.conf /etc/github/cluster
@@ -469,7 +433,6 @@ destructive_repair() {
   ghe-single-config-apply &
   pid=$!
   counter=0
-  # While the ghe-config-apply process is running, output standby messages.
   while kill -0 "$pid" 2>/dev/null; do
     echo "Configuration in progress... please stand by."
     sleep 20
@@ -483,12 +446,10 @@ destructive_start() {
   echo "Running DESTRUCTIVE START FROM SCRATCH procedures..."
   echo "******************************************"
   
-  # Execute destructive base install steps.
   sudo systemctl stop fluent-bit
   sudo systemctl stop ghe-user-disk
   sudo systemctl stop ghe-user-disk.path
   
-  # Attempt to unmount /data/user; if it fails, recommend reboot.
   sudo umount /data/user
   if [ $? -ne 0 ]; then
     echo "Error: Unmounting /data/user failed. Please reboot the appliance and try again."
@@ -501,7 +462,6 @@ destructive_start() {
   sudo /usr/local/share/enterprise/ghe-storage-init
   sleep 10
   ghe-maintenance -u
-  # Echo next steps and give the user time before initiating a reboot.
   echo "____"
   echo "____"
   echo "Next steps: After the appliance reboots, if you see the Unicorn page, please manually start unicorn with (and then wait 10 minutes):"
@@ -518,7 +478,6 @@ while true; do
   validate_choice && break
 done
 
-# Execute the selected troubleshooting run level.
 case $choice in
   1)
     safe_restarts
@@ -534,9 +493,6 @@ case $choice in
     ;;
 esac
 
-###############################
-# Final Checks and Reporting (if not already exited earlier)
-###############################
 echo "******************************************"
 echo "Running final status checks and generating report..."
 echo "******************************************"
@@ -545,33 +501,3 @@ generate_report
 update_support_ticket
 
 echo "Script execution completed. Please review the report at $REPORT_FILE for details."
-
-
-##### Scratch Thoughts
-
-#### review this for later implimentation.
-## Enable Actions
-# ghe-config app.actions.enabled true
-# ghe-config-apply
-
-# cluster commands
-#ghe-cluster-each -xs -- sudo systemctl restart nomad
-#ghe-cluster-each -xs -- sudo systemctl restart nomad-jobs
-#ghe-cluster-each -xs -- sudo systemctl restart nomad-jobs.timer
-#   -x | --exclude                Exclude local host
-#   -s | --serial                 Run commands serially.
-
-# ghe-config-apply fails with databases due to inprogress-stuck recovery.
-# ghe-mssql-console -y -q "select name,state_desc,recovery_model_desc from sys.databases"
-# ghe-mssql-console -y -n -q "RESTORE DATABASE [Mps_Configuration] WITH RECOVERY"
-# ghe-mssql-console -y -n -q "RESTORE DATABASE [Token_Configuration] WITH RECOVERY
-# ghe-mssql-console -y -n -q "RESTORE DATABASE [Pipelines_Configuration] WITH RECOVERY"
-# ghe-mssql-console -y -n -q "RESTORE DATABASE [ArtifactCache_Configuration] WITH RECOVERY"
-
-
-### Unsorted nomad services review
-# viewscreen, notebooks, lfs-server, gpgverify, github-ernicorn, codeload, babeld2hydro, frontend, backend, frontend, treelights, 
-# token-scanning-udp-backfill-worker, token-scanning-scans-api, token-scanning-reposync-worker, token-scanning-partner-validity-check-worker
-# token-scanning-jobgroup-worker, token-scanning-incremental-worker, token-scanning-hydro-consumer, token-scanning-hcs-upgrade-backfill-worker, token-scanning-content-scan-worker
-# token-scanning-content-backfill-worker, token-scanning-backfill-worker, token-scanning-api, spokes-sweeper, spokesd, mail-replies, grafana, github-stream-processors 
-# github-resqued, alive, authzd, authnd, kredz-varz, kredz-hydro-consumer, kredz, minio, kafka-lite, http2hydro, graphite-web, git-daemon, github-env, consul-template
