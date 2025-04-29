@@ -244,6 +244,7 @@ safe_restarts() {
   fi
   
   # If we reach here, configuration did not fully succeed, so proceed with remedial actions.
+  /usr/local/share/enterprise/ghe-repl-stop-es
   ghe-repl-stop-all &
   pid=$!
   counter=0
@@ -256,8 +257,6 @@ safe_restarts() {
   
   sudo nomad stop alambic
   sudo nomad job stop alambic
-  
-  /usr/local/share/enterprise/ghe-repl-stop-es
 
   sudo nomad stop haproxy-frontend 
   sudo nomad stop haproxy-cluster-proxy 
@@ -328,8 +327,6 @@ safe_restarts() {
     sleep 20
     counter=$(( counter + 1 ))
   done
-  
-  unset_maintenance
 }
 
 ### Option 2: Exhaustive Restarts
@@ -341,26 +338,6 @@ exhaustive_restarts() {
   # Set flag to skip calling try_apply_config in safe_restarts.
   SKIP_TRY_APPLY_CONFIG="true"
   safe_restarts
-
-  ghe-repl-stop-all &
-  pid=$!
-  counter=0
-  
-  while kill -0 "$pid" 2>/dev/null; do
-    echo "Stopping replication... please stand by."
-    sleep 20
-    counter=$(( counter + 1 ))
-  done
-
-  ghe-repl-start-all &
-  pid=$!
-  counter=0
-  
-  while kill -0 "$pid" 2>/dev/null; do
-    echo "Starting replication... please stand by."
-    sleep 20
-    counter=$(( counter + 1 ))
-  done
 
   ACTIONS_ENABLED=$(ghe-config app.actions.enabled)
   if [ "$ACTIONS_ENABLED" != "true" ]; then
@@ -497,6 +474,7 @@ echo "******************************************"
 echo "Running final status checks and generating report..."
 echo "******************************************"
 
+unset_maintenance
 generate_report
 update_support_ticket
 
