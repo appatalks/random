@@ -255,7 +255,16 @@ safe_restarts() {
   # If we reach here, configuration did not fully succeed, so proceed with remedial actions.
 
   # Stop replication
-  ghe-repl-stop-all
+  ghe-repl-stop-all &
+  pid=$!
+  counter=0
+  
+  # output standby messages.
+  while kill -0 "$pid" 2>/dev/null; do
+    echo "Stopping replication... please stand by."
+    sleep 20
+    counter=$(( counter + 1 ))
+  done
   
   # Stop alambic.
   sudo nomad stop alambic
@@ -319,7 +328,16 @@ safe_restarts() {
   sudo nomad run /etc/nomad-jobs/alambic/alambic.hcl
 
   # Start replication
-  ghe-repl-start-all
+  ghe-repl-start-all &
+  pid=$!
+  counter=0
+  
+  # output standby messages.
+  while kill -0 "$pid" 2>/dev/null; do
+    echo "Starting replication... please stand by."
+    sleep 20
+    counter=$(( counter + 1 ))
+  done
 
   ghe-config-apply &
   pid=$!
@@ -387,7 +405,16 @@ exhaustive_restarts() {
       echo "One or more additional repair steps failed. Disabling Actions..."
       backup_actions_config
       ghe-config app.actions.enabled false
-      ghe-config-apply
+      
+      ghe-config-apply &
+      pid=$!
+      counter=0
+      # output standby messages.
+      while kill -0 "$pid" 2>/dev/null; do
+        echo "Configuration in progress... please stand by."
+        sleep 20
+        counter=$(( counter + 1 ))
+      done
   else
       echo "Additional repairs succeeded."
   fi
@@ -414,7 +441,16 @@ destructive_repair() {
   ghe-mssql-console -y -q "DROP AVAILABILITY GROUP [ha]"
   sudo nomad stop mssql
   sudo nomad run /etc/nomad-jobs/mssql/mssql.hcl
-  ghe-single-config-apply
+  
+  ghe-single-config-apply &
+  pid=$!
+  counter=0
+  # While the ghe-config-apply process is running, output standby messages.
+  while kill -0 "$pid" 2>/dev/null; do
+    echo "Configuration in progress... please stand by."
+    sleep 20
+    counter=$(( counter + 1 ))
+  done  
 }
 
 ### Option 4: Destructive Start from Scratch
