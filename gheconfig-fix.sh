@@ -253,6 +253,10 @@ safe_restarts() {
   try_apply_config
   
   # If we reach here, configuration did not fully succeed, so proceed with remedial actions.
+
+  # Stop replication
+  ghe-repl-stop-all
+  
   # Stop alambic.
   sudo nomad stop alambic
   sudo nomad job stop alambic
@@ -311,9 +315,11 @@ safe_restarts() {
   sudo nomad run /etc/nomad-jobs/github/unicorn.hcl
   sudo nomad run -hcl1 /etc/nomad-jobs/github/gitauth.hcl
 
-  
   # Restart alambic.
   sudo nomad run /etc/nomad-jobs/alambic/alambic.hcl
+
+  # Start replication
+  ghe-repl-start-all
 
   ghe-config-apply &
   pid=$!
