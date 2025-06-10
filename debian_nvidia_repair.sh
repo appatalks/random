@@ -77,3 +77,13 @@ main() {
 }
 
 main "$@"
+
+
+###
+# After
+# sudo apt-mark hold nvidia-driver nvidia-driver-libs nvidia-driver-bin libcuda1
+# 
+# sudo apt-get update
+# sudo apt-get install --reinstall nvidia-driver-libs:amd64 nvidia-driver-bin
+# sudo ldconfig          # rebuild linker cache
+
