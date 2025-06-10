@@ -86,4 +86,5 @@ main "$@"
 # sudo apt-get update
 # sudo apt-get install --reinstall nvidia-driver-libs:amd64 nvidia-driver-bin
 # sudo ldconfig          # rebuild linker cache
+# sudo apt install nvidia-cuda-toolkit.
 
