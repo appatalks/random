@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rainbow Wall Climber — Retro 8‑bit</title>
+<style>
+  :root { --bg:#0a0a0a; --fg:#e6e6e6; --scanline:rgba(255,255,255,0.04); }
+  html,body{height:100%;margin:0;background:radial-gradient(ellipse at center,#0f0f15 0%,#060608 70%);color:var(--fg);font-family:ui-monospace,Menlo,Monaco,Consolas,"Courier New",monospace;overflow:hidden}
+  .wrap{position:relative; width:100vw; height:100vh; display:grid; place-items:center}
+  canvas{image-rendering:pixelated; image-rendering:crisp-edges; background:#000; box-shadow:0 30px 80px rgba(0,0,0,.7), inset 0 0 0 2px rgba(255,255,255,.04); border-radius:10px}
+  .crt::after{content:""; position:absolute; inset:0; pointer-events:none; background:repeating-linear-gradient(to bottom,transparent 0px,transparent 2px,var(--scanline) 3px,transparent 4px); mix-blend-mode:overlay; border-radius:10px}
+  #ui{position:absolute; top:10px; left:10px; right:10px; display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:14px; letter-spacing:.5px; text-shadow:0 0 6px rgba(255,255,255,.2); user-select:none}
+  .pill{background:rgba(0,0,0,.45); padding:6px 10px; border:1px solid rgba(255,255,255,.12); border-radius:999px}
+  .pill.btnlike{cursor:pointer}
+  #overlay{position:absolute; inset:0; display:grid; place-items:center; background:radial-gradient(ellipse at center, rgba(0,0,0,.65) 0%, rgba(0,0,0,.9) 70%); color:#fff; text-align:center; padding:24px}
+  #overlay h1{margin:0 0 6px 0; font-size:28px; letter-spacing:1px}
+  .btn{display:inline-block; margin-top:10px; padding:8px 14px; border-radius:8px; border:1px solid rgba(255,255,255,.2); background:linear-gradient(180deg, rgba(255,255,255,.08), rgba(0,0,0,.2)); color:#fff; text-decoration:none}
+  .rainbow{background:linear-gradient(90deg,#ff3d3d,#ff8a00,#ffd300,#33dd55,#2bb7ff,#b94aff,#ff3dca); -webkit-background-clip:text; -webkit-text-fill-color:transparent}
+  /* Mobile controls */
+  #mobileControls{position:fixed; left:0; right:0; bottom:8px; display:none; grid-template-columns: 1fr 1fr; gap:12px; padding:0 12px; pointer-events:none; z-index:10}
+  #mobileControls .pad{display:grid; grid-template-areas: ". up ." "left . right" ". down ."; gap:8px;}
+  #mobileControls .pad button{width:56px; height:56px}
+  #mobileControls .actions{display:flex; justify-content:flex-end; align-items:end; gap:10px}
+  #mobileControls .btn, #mobileControls .pad button{pointer-events:auto; user-select:none; touch-action:none; background:rgba(0,0,0,.5); border:1px solid rgba(255,255,255,.2); color:#fff; border-radius:12px; padding:14px; font:inherit}
+  @media (max-width: 900px){ #mobileControls{display:grid} }
+</style>
+</head>
+<body>
+  <div class="wrap crt">
+    <canvas id="game" width="320" height="480" aria-label="Rainbow Wall Climber"></canvas>
+    <div id="ui">
+      <div class="pill" id="score">Height: 0 m</div>
+      <div class="pill" id="pups">Powerups: 0</div>
+      <div class="pill" id="hint">WASD/Arrows • W/↑ climb • Space build/destroy • M mute</div>
+      <a href="#" class="pill btnlike" id="restartBtnUI">Restart (R)</a>
+    </div>
+    <div id="overlay">
+      <div>
+        <h1><span class="rainbow">RAINBOW WALL CLIMBER</span></h1>
+        <p>Endless 8‑bit ascent up a rainbow brick wall. Windows are void hazards.</p>
+        <p>Collect <b>rainbow orbs</b> and press <b>Space</b> to place/remove bricks.</p>
+        <p><b>WASD/Arrows</b> to move • <b>M</b> mute • <b>R</b> restart</p>
+        <a href="#" class="btn" id="startBtn">Insert Coin (Start)</a>
+      </div>
+    </div>
+  </div>
+<script>
+(() => {
+  // ======= Config =======
+  const TILE=16, COLS=16, ROWS=30; // grid
+  const VIEW_W=COLS*TILE, VIEW_H=ROWS*TILE;
+  const MOVE_SPEED=1.6, CLIMB_SPEED=2.2; // feel
+  const BASE_ROW=220; // bottom spawn
+
+  // Tile types
+  const T_EMPTY=0, T_BRICK=1, T_WINDOW=2, T_GAP=3, T_FILLED=4, T_POWER=5;
+  const GUARD_EVERY=20;
+
+  // Canvas
+  const canvas=document.getElementById('game');
+  const ctx=canvas.getContext('2d'); ctx.imageSmoothingEnabled=false;
+  const wrapper=document.querySelector('.wrap');
+  function fit(){const ww=wrapper.clientWidth, wh=wrapper.clientHeight, aspect=VIEW_W/VIEW_H; let w=ww,h=Math.floor(ww/aspect); if(h>wh){h=wh; w=Math.floor(wh*aspect);} canvas.style.width=w+'px'; canvas.style.height=h+'px';}
+  addEventListener('resize',fit); fit();
+
+  // RNG
+  const MASTER_SEED=(Math.random()*0xFFFF_FFFF)>>>0;
+  function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;}}
+  function randForRow(r){return mulberry32((MASTER_SEED^(r*2654435761))>>>0)}
+
+  // World state
+  let rows=new Map(); // rowIndex -> Uint8Array(COLS)
+  let enemies=[]; // {x,yRow,dir,speed}
+  let cameraBase=0; // bottom y (px) of screen in world space
+  let startY=0, bestClimb=0;
+
+  // Player
+  const player={x:Math.floor(COLS/2)*TILE+2, y:6*TILE, w:10, h:14, vx:0, vy:0, powerups:0, facing:1, started:false, alive:true, onGround:false};
+
+  // UI
+  const scoreEl=document.getElementById('score');
+  const pupsEl=document.getElementById('pups');
+  const overlay=document.getElementById('overlay');
+  const startBtn=document.getElementById('startBtn');
+  const restartBtnUI=document.getElementById('restartBtnUI');
+
+  // ======= Audio =======
+  let audioCtx=null, musicTimer=null, musicOn=true;
+  function initAudio(){ if(audioCtx) return; audioCtx=new (window.AudioContext||window.webkitAudioContext)(); startMusic(); }
+  function beep(freq=440,dur=0.08,type='square',gain=0.05){ if(!audioCtx||!musicOn) return; const o=audioCtx.createOscillator(), g=audioCtx.createGain(); o.type=type; o.frequency.value=freq; g.gain.value=gain; o.connect(g).connect(audioCtx.destination); const t=audioCtx.currentTime; g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gain,t+0.005); g.gain.exponentialRampToValueAtTime(0.0001,t+dur); o.start(t); o.stop(t+dur+0.02); }
+  function startMusic(){ if(!musicOn||!audioCtx||musicTimer) return; const notes=[261.63,311.13,392.00,523.25,392.00,311.13]; let i=0; musicTimer=setInterval(()=>{ if(!musicOn) return; beep(notes[i%notes.length]/2,0.08,'square',0.025); beep(notes[(i*2)%notes.length],0.06,'square',0.02); i++; },180); }
+  function stopMusic(){ if(musicTimer){clearInterval(musicTimer); musicTimer=null;} }
+  const sfx={ jump:()=>beep(680,0.08,'square',0.045), land:()=>beep(220,0.05,'square',0.03), power:()=>beep(880,0.09,'square',0.05), place:()=>beep(520,0.07,'square',0.04), hit:()=>beep(120,0.15,'square',0.07), gameover:()=>beep(180,0.3,'square',0.06) };
+
+  // ======= Input =======
+  const keys=new Set();
+  addEventListener('keydown',e=>{ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault(); const k=e.key.toLowerCase(); if(k==='m'){ musicOn=!musicOn; if(musicOn){ if(!audioCtx) initAudio(); startMusic(); } else stopMusic(); return; } if(k==='r'){ overlay.style.display='none'; startGame(); return; } if(!player.started) return; keys.add(k); });
+  addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
+
+  // Mobile controls
+  function bindHold(el,key){ if(!el) return; const down=e=>{e.preventDefault(); keys.add(key);}; const up=e=>{e.preventDefault(); keys.delete(key);}; el.addEventListener('pointerdown',down); el.addEventListener('pointerup',up); el.addEventListener('pointerleave',up); el.addEventListener('pointercancel',up); }
+  function ensureMobile(){ if(document.getElementById('mobileControls')) return; const mc=document.createElement('div'); mc.id='mobileControls'; mc.innerHTML=`
+    <div class="pad">
+      <button id="btnUp" style="grid-area:up">↑</button>
+      <button id="btnLeft" style="grid-area:left">←</button>
+      <button id="btnRight" style="grid-area:right">→</button>
+      <button id="btnDown" style="grid-area:down">↓</button>
+    </div>
+    <div class="actions">
+      <button class="btn" id="btnPlace">Place</button>
+      <button class="btn" id="btnRestart">Restart</button>
+    </div>`; document.body.appendChild(mc);
+    bindHold(document.getElementById('btnLeft'),'a');
+    bindHold(document.getElementById('btnRight'),'d');
+    bindHold(document.getElementById('btnUp'),'w');
+    bindHold(document.getElementById('btnDown'),'s');
+    document.getElementById('btnPlace').addEventListener('pointerdown',e=>{e.preventDefault(); tryPlace();});
+    document.getElementById('btnRestart').addEventListener('pointerdown',e=>{e.preventDefault(); overlay.style.display='none'; startGame();});
+    ['touchstart','touchmove','touchend'].forEach(ev=>mc.addEventListener(ev,e=>e.preventDefault(),{passive:false}));
+  }
+
+  // Start/Restart
+  startBtn.addEventListener('click',e=>{e.preventDefault(); startGame();});
+  overlay.addEventListener('click',e=>{ if(!player.started) startGame(); });
+  restartBtnUI.addEventListener('click',e=>{ e.preventDefault(); overlay.style.display='none'; startGame(); });
+
+  function startGame(){
+    overlay.style.display='none'; player.started=true; player.alive=true;
+    if(('ontouchstart' in window)||navigator.maxTouchPoints>0) ensureMobile();
+    resetWorld(); initAudio();
+  }
+
+  // ======= World Generation =======
+  function ensureRow(r){ if(rows.has(r)) return; const arr=new Uint8Array(COLS); for(let c=0;c<COLS;c++) arr[c]=T_BRICK; const rnd=randForRow(r);
+    if(r>6 && r%GUARD_EVERY===0){ // guarded layer
+      const voids=Math.floor(rnd()*2)+1; for(let i=0;i<voids;i++){ const at=2+Math.floor(rnd()*(COLS-4)); arr[at]=T_WINDOW; arr[at+1]=T_WINDOW; }
+      const ecount=1+(rnd()>0.6?1:0); for(let i=0;i<ecount;i++){ enemies.push({x:(1+Math.floor(rnd()*(COLS-2)))*TILE+0.5, yRow:r-1, dir:rnd()>0.5?1:-1, speed:0.6+rnd()*0.4}); }
+    } else {
+      if(rnd()>0.22){ const windows=Math.floor(randForRow(r+13)()*3); for(let i=0;i<windows;i++){ const at=Math.floor(randForRow(r+i*7)()*COLS); arr[at]=T_WINDOW; } }
+      if(r>6 && r%12===0){ const gapLen=3+Math.floor(rnd()*4); const start=2+Math.floor(rnd()*(COLS-gapLen-4)); for(let c=start;c<start+gapLen;c++) arr[c]=T_GAP; }
+      if(r>2 && randForRow(r*3)()>0.85){ let attempts=10; while(attempts--){ const c=Math.floor(randForRow(r*7+attempts)()*COLS); if(arr[c]===T_BRICK){ arr[c]=T_POWER; break; } } }
+    }
+    rows.set(r,arr);
+  }
+
+  function resetWorld(){ rows.clear(); enemies.length=0; bestClimb=0; const spawnCol=Math.floor(COLS/2); const spawnRow=BASE_ROW; for(let r=spawnRow-60;r<=spawnRow+120;r++) ensureRow(r); carveSpawnPocket(spawnCol,spawnRow);
+    // Safety: force exact spawn to brick, clear immediate headroom of windows
+    if(![T_BRICK,T_FILLED].includes(getTileAt(spawnCol,spawnRow))) setTileAt(spawnCol,spawnRow,T_BRICK);
+    for(let r=spawnRow-3;r<=spawnRow-1;r++){ if(getTileAt(spawnCol,r)===T_WINDOW) setTileAt(spawnCol,r,T_EMPTY); }
+    // Player
+    player.x=spawnCol*TILE+2; player.y=spawnRow*TILE; player.vx=0; player.vy=0; player.powerups=1; player.facing=1; startY=player.y; cameraBase=Math.max(0,player.y - VIEW_H*0.5);
+    // Starter orb near spawn
+    ensureRow(spawnRow-1); setTileAt(Math.min(COLS-2,spawnCol+1),spawnRow-1,T_POWER);
+  }
+
+  function carveSpawnPocket(centerCol,floorRow){ // solid wall with tiny headroom
+    ensureRow(floorRow); const floor=rows.get(floorRow); for(let c=Math.max(0,centerCol-3); c<=Math.min(COLS-1,centerCol+3); c++) floor[c]=T_BRICK;
+    for(let r=floorRow-1; r>=floorRow-2; r--){ ensureRow(r); const row=rows.get(r); for(let c=0;c<COLS;c++) row[c]= (row[c]===T_WINDOW?T_WINDOW:T_BRICK); }
+    setTileAt(centerCol, floorRow-1, T_EMPTY); setTileAt(centerCol, floorRow-2, T_EMPTY);
+    for(let r=floorRow-3; r<=floorRow; r++){ ensureRow(r); const row=rows.get(r); for(let c=Math.max(0,centerCol-2); c<=Math.min(COLS-1,centerCol+2); c++){ if(row[c]===T_WINDOW) row[c]=T_BRICK; } }
+  }
+
+  function getTileAt(col,row){ ensureRow(row); const arr=rows.get(row); return arr?arr[col]:T_BRICK; }
+  function setTileAt(col,row,val){ ensureRow(row); const arr=rows.get(row); if(arr) arr[col]=val; }
+  function solidAt(col,row){ const t=getTileAt(col,row); return (t===T_BRICK || t===T_FILLED || t===T_POWER); }
+  function isVoidAt(col,row){ const t=getTileAt(col,row); return (t===T_WINDOW || t===T_GAP || t===T_EMPTY); }
+
+  // ======= Rendering =======
+  const rainbow=['#ff4d4d','#ff8a00','#ffd300','#33dd55','#2bb7ff','#b94aff','#ff3dca'];
+  function drawRow(row,yPix){ const arr=rows.get(row); if(!arr) return; for(let c=0;c<COLS;c++){ const x=c*TILE; const t=arr[c]; if(t===T_BRICK||t===T_FILLED){ const col=rainbow[((row%rainbow.length)+rainbow.length)%rainbow.length]; drawBrick(x,yPix,col,t===T_FILLED); } else if(t===T_WINDOW){ drawWindow(x,yPix); } else if(t===T_POWER){ const col=rainbow[((row%rainbow.length)+rainbow.length)%rainbow.length]; drawBrick(x,yPix,col,false); drawPowerup(x+TILE/2,yPix+TILE/2); } else if(t===T_EMPTY){ ctx.fillStyle='#111'; ctx.fillRect(x,yPix,TILE,TILE); ctx.strokeStyle='rgba(255,255,255,.15)'; ctx.lineWidth=1; ctx.strokeRect(x+2,yPix+2,TILE-4,TILE-4); } else if(t===T_GAP){ drawGapOutline(x,yPix); } } }
+  function drawBrick(x,y,color,isFilled=false){ ctx.fillStyle=color; ctx.fillRect(x,y,TILE,TILE); ctx.fillStyle='rgba(0,0,0,.25)'; ctx.fillRect(x,y+TILE-3,TILE,3); ctx.fillRect(x+TILE-3,y,3,TILE); ctx.fillStyle='rgba(255,255,255,.15)'; ctx.fillRect(x+2,y+2,TILE-6,2); if(isFilled){ ctx.fillStyle='rgba(255,255,255,.25)'; ctx.fillRect(x+3,y+3,2,TILE-6); ctx.fillRect(x+TILE-5,y+3,2,TILE-6);} }
+  function drawWindow(x,y){ ctx.fillStyle='#000'; ctx.fillRect(x,y,TILE,TILE); ctx.strokeStyle='#222'; ctx.lineWidth=2; ctx.strokeRect(x+1,y+1,TILE-2,TILE-2); }
+  function drawGapOutline(x,y){ ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1; ctx.strokeRect(x+2,y+2,TILE-4,TILE-4); }
+  function drawPowerup(cx,cy){ const r=TILE*0.35; const g=ctx.createRadialGradient(cx-2,cy-2,r*0.2,cx,cy,r); g.addColorStop(0,'#fff'); g.addColorStop(0.2,'#ff4d4d'); g.addColorStop(0.4,'#ffd300'); g.addColorStop(0.6,'#33dd55'); g.addColorStop(0.8,'#2bb7ff'); g.addColorStop(1,'#b94aff'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill(); }
+  function drawEnemy(ex,row){ const x=ex, y=row*TILE - cameraBase; ctx.fillStyle='#d22'; ctx.fillRect(x-6,y+TILE-12,12,10); ctx.fillRect(x-8,y+TILE-12,4,4); ctx.fillRect(x+4,y+TILE-12,4,4); ctx.fillStyle='#fff'; ctx.fillRect(x-4,y+TILE-10,3,3); ctx.fillRect(x+1,y+TILE-10,3,3); }
+  function drawPlayer(){ const x=Math.floor(player.x), y=Math.floor(player.y - cameraBase); ctx.fillStyle='#fff'; ctx.fillRect(x, y-player.h, player.w, player.h); ctx.fillStyle='#ff4d4d'; ctx.fillRect(x, y-player.h, player.w, 2); ctx.fillStyle='#ffd300'; ctx.fillRect(x, y-player.h+2, player.w, 2); ctx.fillStyle='#2bb7ff'; ctx.fillRect(x, y-player.h+4, player.w, 2); ctx.fillStyle='#000'; ctx.fillRect(x+2, y-player.h+6, 2,2); ctx.fillRect(x+player.w-4, y-player.h+6, 2,2); }
+
+  // ======= Gameplay =======
+  function overlapsWindow(px,py,w,h){ const x0=Math.floor(px/TILE), x1=Math.floor((px+w)/TILE); const y0=Math.floor((py-h)/TILE), y1=Math.floor(py/TILE); for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){ if(getTileAt(x,y)===T_WINDOW) return true; } return false; }
+
+  function updatePlayer(dt){ if(!player.alive) return; // free climb controls
+    let dx=0, dy=0; if(keys.has('a')||keys.has('arrowleft')) dx-=MOVE_SPEED; if(keys.has('d')||keys.has('arrowright')) dx+=MOVE_SPEED; if(keys.has('w')||keys.has('arrowup')) dy-=CLIMB_SPEED; if(keys.has('s')||keys.has('arrowdown')) dy+=CLIMB_SPEED;
+    // move X, block by windows only
+    const prevX=player.x; player.x+=dx; if(overlapsWindow(player.x,player.y,player.w,player.h)) player.x=prevX;
+    // move Y
+    const prevY=player.y; player.y+=dy; if(overlapsWindow(player.x,player.y,player.w,player.h)) player.y=prevY;
+    // camera
+    cameraBase=Math.max(0, player.y - VIEW_H*0.5);
+    // place/destroy
+    if(keys.has(' ')||keys.has('space')){ tryPlace(); keys.delete(' '); keys.delete('space'); }
+  }
+
+  function tryPlace(){ if(player.powerups<=0) return; const dir=player.facing; const tx=Math.floor((player.x + (dir>0?player.w:-2))/TILE); const ty=Math.floor((player.y-2)/TILE); const candidates=[[tx,ty],[tx,ty+1],[Math.floor(player.x/TILE),ty+1]]; for(const [cx,cy] of candidates){ const t=getTileAt(cx,cy); if(t===T_EMPTY||t===T_GAP){ setTileAt(cx,cy,T_FILLED); player.powerups--; sfx.place(); return; } if(t===T_BRICK||t===T_FILLED){ setTileAt(cx,cy,T_EMPTY); player.powerups--; sfx.place(); return; } }
+  }
+
+  function updateEnemies(dt){
+    const minRow=Math.floor(cameraBase/TILE)-2, maxRow=Math.floor((cameraBase+VIEW_H)/TILE)+2;
+    enemies=enemies.filter(e=>e.yRow>=minRow-10&&e.yRow<=maxRow+10);
+    for(const e of enemies){
+      // If somehow sitting in a void, snap to nearest solid; if none, despawn
+      let curCol=Math.floor(e.x/TILE);
+      if(isVoidAt(curCol,e.yRow)){
+        let found=false; for(let d=1; d<COLS; d++){
+          const L=curCol-d, R=curCol+d;
+          if(L>=0 && !isVoidAt(L,e.yRow)){ e.x=L*TILE+TILE/2; found=true; break; }
+          if(R<COLS && !isVoidAt(R,e.yRow)){ e.x=R*TILE+TILE/2; found=true; break; }
+        }
+        if(!found){ e.remove=true; continue; }
+      }
+      // Move horizontally across bricks; reverse at void clusters or edges
+      const dx=e.speed*e.dir;
+      const nextX=e.x+dx;
+      const aheadCol=Math.floor((nextX+(e.dir>0?6:-6))/TILE);
+      if(aheadCol<=0 || aheadCol>=COLS-1 || isVoidAt(aheadCol,e.yRow)){
+        e.dir*=-1; // bounce
+      } else {
+        e.x=nextX;
+      }
+      // Player collision
+      const ex0=e.x-6, ex1=e.x+6, ey0=e.yRow*TILE, ey1=e.yRow*TILE+10;
+      const px0=player.x, px1=player.x+player.w, py0=player.y-player.h, py1=player.y;
+      if(px1>ex0&&px0<ex1&&py1>ey0&&py0<ey1){ sfx.hit(); gameOver(); }
+    }
+    enemies=enemies.filter(e=>!e.remove);
+  }
+
+  function collectPowerups(){ const x0=Math.floor(player.x/TILE), x1=Math.floor((player.x+player.w)/TILE); const y0=Math.floor((player.y-player.h)/TILE), y1=Math.floor(player.y/TILE); for(let y=y0-1;y<=y1+1;y++) for(let x=x0-1;x<=x1+1;x++){ if(getTileAt(x,y)===T_POWER){ const tx=x*TILE, ty=y*TILE; if(player.x+player.w>tx+3 && player.x<tx+TILE-3 && player.y>ty+3 && player.y-player.h<ty+TILE-3){ setTileAt(x,y,T_BRICK); player.powerups++; sfx.power(); } } } }
+
+  function updateUI(){ const climbed=Math.max(0, Math.floor((startY - player.y)/TILE)); if(climbed>bestClimb) bestClimb=climbed; scoreEl.textContent=`Height: ${bestClimb} m`; pupsEl.textContent=`Powerups: ${player.powerups}`; }
+
+  function gameOver(){ if(!player.alive) return; player.alive=false; sfx.gameover(); stopMusic(); overlay.style.display='grid'; overlay.innerHTML=`<div><h1>Game Over</h1><p>You climbed <b>${bestClimb}</b> meters.</p><p>Press <b>R</b> or tap Restart.</p><a href="#" class="btn" id="restartBtn">Restart</a></div>`; const rb=document.getElementById('restartBtn'); if(rb) rb.addEventListener('click',e=>{e.preventDefault(); overlay.style.display='none'; startGame();}); }
+
+  // ======= Main Loop =======
+  let last=0; function frame(t){ const dt=Math.min(33, t-last); last=t; const topRow=Math.floor((cameraBase+VIEW_H)/TILE); for(let r=topRow;r<topRow+40;r++) ensureRow(r); if(player.started && player.alive){ updatePlayer(dt); updateEnemies(dt); collectPowerups(); updateUI(); // death only if overlapping a window tile
+      if(overlapsWindow(player.x,player.y,player.w,player.h)){ sfx.hit(); gameOver(); }
+    }
+    ctx.clearRect(0,0,VIEW_W,VIEW_H); const startRow=Math.floor(cameraBase/TILE), endRow=Math.floor((cameraBase+VIEW_H)/TILE)+1; for(let r=startRow; r<=endRow; r++){ drawRow(r, r*TILE - cameraBase); }
+    for(const e of enemies){ const y=e.yRow*TILE - cameraBase; if(y>-TILE && y<VIEW_H+TILE) drawEnemy(e.x, e.yRow); }
+    if(player.started) drawPlayer(); requestAnimationFrame(frame); }
+  requestAnimationFrame(frame);
+
+  // ======= Minimal Tests (optional) =======
+  function param(k){ try{ return new URLSearchParams(location.search).get(k); }catch{return null;} }
+  function runTests(){
+    try{
+      const msgs=[];
+      rows.clear(); ensureRow(10); msgs.push(['T1 row gen', rows.has(10)]);
+      resetWorld(); msgs.push(['T2 start hides overlay', overlay.style.display==='none']);
+      const y0=player.y; keys.add('w'); for(let i=0;i<8;i++) updatePlayer(16); keys.delete('w'); msgs.push(['T3 climb up', player.y<y0]);
+      // Enemy movement over bricks
+      const r=Math.floor(player.y/TILE)-1; ensureRow(r); for(let c=0;c<COLS;c++) setTileAt(c,r,T_BRICK);
+      enemies.length=0; enemies.push({x:2*TILE, yRow:r, dir:1, speed:1});
+      let moved=false; for(let i=0;i<20;i++){ updateEnemies(16); if(enemies[0].x!==2*TILE) moved=true; }
+      msgs.push(['T12 enemy moves on bricks', moved]);
+      // Cluster of windows causes reversal
+      for(let c=6;c<=12 && c<COLS;c++) setTileAt(c,r,T_WINDOW);
+      let reversed=false, d0=enemies[0].dir; for(let i=0;i<30;i++){ updateEnemies(16); if(enemies[0].dir!==d0){ reversed=true; break; } }
+      msgs.push(['T13 enemy reverses at window cluster', reversed]);
+      console.log(msgs.map(([n,ok])=>`${ok?'✅':'❌'} ${n}`).join('\n'));
+    }catch(e){ console.error('Tests failed',e); }
+  }
+  if(param('test')==='1') runTests();
+})();
+</script>
+</body>
+</html>
